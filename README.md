@@ -29,7 +29,7 @@ Note: Tested only on the RP2040 platform.
 
 see [examples/lvgl_calendar](examples/lvgl_calendar)
 
-You need to copy the lv_utils.py file from [https://github.com/lvgl/lv_binding_micropython/blob/master/lib/lv_utils.py](You need to copy the lv_utils.py file from https://github.com/lvgl/lv_binding_micropython/blob/master/lib/lv_utils.py to your RP2040 development board.) to your RP2040 development board.
+You need to copy the lv_utils.py file from [https://github.com/lvgl/lv_binding_micropython/blob/master/lib/lv_utils.py](https://github.com/lvgl/lv_binding_micropython/blob/master/lib/lv_utils.py) to your RP2040 development board.
 
 # Original project README
 
