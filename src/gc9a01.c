@@ -50,9 +50,6 @@
 
 #include "gc9a01.h"
 
-#include "mpfile.h"
-#include "tjpgd565.h"
-
 #define _swap_int16_t(a, b) { int16_t t = a; a = b; b = t; }
 #define _swap_bytes(val) ((((val) >> 8) & 0x00FF) | (((val) << 8) & 0xFF00))
 
@@ -85,7 +82,6 @@
 typedef struct _gc9a01_GC9A01_obj_t {
     mp_obj_base_t base;                             // base class
     mp_obj_base_t *spi_obj;                         // SPI object
-    mp_file_t *fp;                                  // file object
     uint16_t *i2c_buffer;                           // resident buffer if buffer_size given
     void *work;                                     // work buffer for jpg decoding
     uint32_t buffer_size;                           // resident buffer size, 0=dynamic
@@ -1807,207 +1803,6 @@ static mp_obj_t gc9a01_map_bitarray_to_rgb565(size_t n_args, const mp_obj_t *arg
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(gc9a01_map_bitarray_to_rgb565_obj, 3, 6, gc9a01_map_bitarray_to_rgb565);
 
 
-//
-// jpg routines
-//
-
-#define JPG_MODE_FAST (0)
-#define JPG_MODE_SLOW (1)
-
-// User defined device identifier
-typedef struct {
-    mp_file_t *fp;                                  // File pointer for input function
-    uint8_t *fbuf;                                  // Pointer to the frame buffer for output function
-    unsigned int wfbuf;                             // Width of the frame buffer [pix]
-    gc9a01_GC9A01_obj_t *self;                      // display object
-} IODEV;
-
-//
-// User defined input function
-//
-
-static unsigned int in_func(                        // Returns number of bytes read (zero on error)
-    JDEC *jd,                                       // Decompression object
-    uint8_t *buff,                                  // Pointer to the read buffer (null to remove data)
-    unsigned int nbyte) {                           // Number of bytes to read/remove
-    IODEV *dev = (IODEV *)jd->device;               // Device identifier for the session (5th argument of jd_prepare function)
-    unsigned int nread;
-
-    if (buff) {                                     // Read data from input stream
-        nread = (unsigned int)mp_readinto(dev->fp, buff, nbyte);
-        return nread;
-    }
-
-    // Remove data from input stream if buff was NULL
-    mp_seek(dev->fp, nbyte, SEEK_CUR);
-    return 0;
-}
-
-//
-// Fast output function to draw the entire image at once
-//
-
-static int out_fast(                                // 1:Ok, 0:Aborted
-    JDEC *jd,                                       // Decompression object
-    void *bitmap,                                   // Bitmap data to be output
-    JRECT *rect) {                                  // Rectangular region of output image
-    IODEV *dev = (IODEV *)jd->device;
-    uint8_t *src, *dst;
-    uint16_t y, bws, bwd;
-
-    // Copy the decompressed RGB rectangular to the frame buffer (assuming RGB565)
-    src = (uint8_t *)bitmap;
-    dst = dev->fbuf + 2 * (rect->top * dev->wfbuf + rect->left); // Left-top of destination rectangular
-    bws = 2 * (rect->right - rect->left + 1);       // Width of source rectangular [byte]
-    bwd = 2 * dev->wfbuf;                           // Width of frame buffer [byte]
-    for (y = rect->top; y <= rect->bottom; y++) {
-        memcpy(dst, src, bws);                      // Copy a line
-        src += bws;
-        dst += bwd;                                 // Next line
-    }
-
-    return 1;                                       // Continue to decompress
-}
-
-//
-// Slow output function to draw the image progressively by each Minimum Coded Unit
-//
-
-static int out_slow(                                // 1:Ok, 0:Aborted
-    JDEC *jd,                                       // Decompression object
-    void *bitmap,                                   // Bitmap data to be output
-    JRECT *rect) {                                  // Rectangular region of output image
-    IODEV *dev = (IODEV *)jd->device;
-    gc9a01_GC9A01_obj_t *self = dev->self;
-    uint8_t *src, *dst;
-    uint16_t y;
-    uint16_t wx2 = (rect->right - rect->left + 1) * 2;
-    uint16_t h = rect->bottom - rect->top + 1;
-
-    // Copy the decompressed RGB rectangular to the frame buffer (assuming RGB565)
-    src = (uint8_t *)bitmap;
-    dst = dev->fbuf;                                // Left-top of destination rectangular
-    for (y = rect->top; y <= rect->bottom; y++) {
-        memcpy(dst, src, wx2);                      // Copy a line
-        src += wx2;
-        dst += wx2;                                 // Next line
-    }
-
-    // blit buffer to display
-
-    set_window(self, rect->left + jd->x_offs, rect->top + jd->y_offs, rect->right + jd->x_offs, rect->bottom + jd->y_offs);
-
-    DC_HIGH();
-    CS_LOW();
-    write_spi(self->spi_obj, (uint8_t *)dev->fbuf, wx2 * h);
-    CS_HIGH();
-
-    return 1;                                       // Continue to decompress
-}
-
-/// #### .jpg(`filename`, `x`, `y` {, `mode`})
-/// Draw a JPG image.
-/// The memory required to decode and display a JPG can be considerable as a
-/// full screen 320x240 JPG would require at least 3100 bytes for the working
-/// area + 320x240x2 bytes of ram to buffer the image. Jpg images that would
-/// require a buffer larger than available memory can be drawn by passing `SLOW`
-/// for method. The `SLOW` method will draw the image a piece at a time using
-/// the Minimum Coded Unit (MCU, typically 8x8) of the image.
-///
-///     * **Required Parameters:**
-///         * ``filename``: filename of the JPG image
-///         * ``x``: column to start at
-///         * ``y``: row to start at
-///
-///     * **Optional Parameters:**
-///
-///         * ``mode``: mode to use for drawing the image (default: JPG_MODE_FAST)
-///
-///             * ``JPG_MODE_FAST``: draw the entire image at once
-///             * ``JPG_MODE_SLOW``: draw the image progressively by each Minimum Coded Unit
-
-static mp_obj_t gc9a01_GC9A01_jpg(size_t n_args, const mp_obj_t *args) {
-    gc9a01_GC9A01_obj_t *self = MP_OBJ_TO_PTR(args[0]);
-    const char *filename = mp_obj_str_get_str(args[1]);
-    mp_int_t x = mp_obj_get_int(args[2]);
-    mp_int_t y = mp_obj_get_int(args[3]);
-    mp_int_t mode;
-
-    if (n_args > 4) {
-        mode = mp_obj_get_int(args[4]);
-    } else {
-        mode = JPG_MODE_FAST;
-    }
-
-    int (*outfunc)(JDEC *, void *, JRECT *);
-
-    JRESULT res;                                    // Result code of TJpgDec API
-    JDEC jdec;                                      // Decompression object
-
-    self->work = (void *)m_malloc(3100);            // Pointer to the work area
-
-    IODEV devid;                                    // User defined device identifier
-    size_t bufsize;
-
-    self->fp = mp_open(filename, "rb");
-    devid.fp = self->fp;
-    if (devid.fp) {
-        // Prepare to decompress
-        res = jd_prepare(&jdec, in_func, self->work, 3100, &devid);
-        if (res == JDR_OK) {
-            // Initialize output device
-            if (mode == JPG_MODE_FAST) {
-                bufsize = 2 * jdec.width * jdec.height;
-                outfunc = out_fast;
-            } else {
-                bufsize = 2 * jdec.msx * 8 * jdec.msy * 8;
-                outfunc = out_slow;
-                jdec.x_offs = x;
-                jdec.y_offs = y;
-            }
-            if (self->buffer_size && bufsize > self->buffer_size) {
-                mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("buffer too small"));
-            }
-
-            if (self->buffer_size == 0) {
-                self->i2c_buffer = m_malloc(bufsize);
-            }
-
-            if (!self->i2c_buffer) {
-                mp_raise_msg(&mp_type_OSError, MP_ERROR_TEXT("out of memory"));
-            }
-
-            devid.fbuf = (uint8_t *)self->i2c_buffer;
-            devid.wfbuf = jdec.width;
-            devid.self = self;
-            res = jd_decomp(&jdec, outfunc, 0);     // Start to decompress with 1/1 scaling
-            if (res == JDR_OK) {
-                if (mode == JPG_MODE_FAST) {
-                    set_window(self, x, y, x + jdec.width - 1, y + jdec.height - 1);
-                    DC_HIGH();
-                    CS_LOW();
-                    write_spi(self->spi_obj, (uint8_t *)self->i2c_buffer, bufsize);
-                    CS_HIGH();
-                }
-            } else {
-                mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("jpg decompress failed."));
-            }
-            if (self->buffer_size == 0) {
-                m_free(self->i2c_buffer);           // Discard frame buffer
-                self->i2c_buffer = MP_OBJ_NULL;
-            }
-            devid.fbuf = MP_OBJ_NULL;
-        } else {
-            mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("jpg prepare failed."));
-        }
-        mp_close(devid.fp);
-    }
-    m_free(self->work);                             // Discard work area
-    return mp_const_none;
-}
-
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(gc9a01_GC9A01_jpg_obj, 4, 5, gc9a01_GC9A01_jpg);
-
 
 /// #### .polygon_center(`polygon`)
 /// Return the center of a polygon as an (x, y) tuple.
@@ -2673,7 +2468,6 @@ static const mp_rom_map_elem_t gc9a01_GC9A01_locals_dict_table[] = {
     { MP_ROM_QSTR(MP_QSTR_vscrdef), MP_ROM_PTR(&gc9a01_GC9A01_vscrdef_obj) },
     { MP_ROM_QSTR(MP_QSTR_vscsad), MP_ROM_PTR(&gc9a01_GC9A01_vscsad_obj) },
     { MP_ROM_QSTR(MP_QSTR_offset), MP_ROM_PTR(&gc9a01_GC9A01_offset_obj) },
-    { MP_ROM_QSTR(MP_QSTR_jpg), MP_ROM_PTR(&gc9a01_GC9A01_jpg_obj)},
     { MP_ROM_QSTR(MP_QSTR_polygon_center), MP_ROM_PTR(&gc9a01_GC9A01_polygon_center_obj)},
     { MP_ROM_QSTR(MP_QSTR_polygon), MP_ROM_PTR(&gc9a01_GC9A01_polygon_obj)},
     { MP_ROM_QSTR(MP_QSTR_fill_polygon), MP_ROM_PTR(&gc9a01_GC9A01_fill_polygon_obj)},
@@ -2773,8 +2567,6 @@ static const mp_map_elem_t gc9a01_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_MAGENTA), MP_ROM_INT(MAGENTA) },
     { MP_ROM_QSTR(MP_QSTR_YELLOW), MP_ROM_INT(YELLOW) },
     { MP_ROM_QSTR(MP_QSTR_WHITE), MP_ROM_INT(WHITE) },
-    { MP_ROM_QSTR(MP_QSTR_FAST), MP_ROM_INT(JPG_MODE_FAST)},
-    { MP_ROM_QSTR(MP_QSTR_SLOW), MP_ROM_INT(JPG_MODE_SLOW)},
     { MP_ROM_QSTR(MP_QSTR_WRAP), MP_ROM_INT(OPTIONS_WRAP)},
     { MP_ROM_QSTR(MP_QSTR_WRAP_H), MP_ROM_INT(OPTIONS_WRAP_H)},
     { MP_ROM_QSTR(MP_QSTR_WRAP_V), MP_ROM_INT(OPTIONS_WRAP_V)}
