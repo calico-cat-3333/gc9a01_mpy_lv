@@ -25,6 +25,12 @@ Note: The files in the firmware folder are not prebuilt binaries. Please do not 
 
 Note: Tested only on the RP2040 platform.
 
+## Example Useage
+
+see [examples/lvgl_calendar](examples/lvgl_calendar)
+
+You need to copy the lv_utils.py file from [https://github.com/lvgl/lv_binding_micropython/blob/master/lib/lv_utils.py](You need to copy the lv_utils.py file from https://github.com/lvgl/lv_binding_micropython/blob/master/lib/lv_utils.py to your RP2040 development board.) to your RP2040 development board.
+
 # Original project README
 
 # GC9A01 Display Driver for MicroPython
