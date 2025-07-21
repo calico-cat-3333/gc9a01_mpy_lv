@@ -1,3 +1,32 @@
+# GC9A01 Display Driver for lv_micropython
+
+Modify the original project to remove tjpgd in order to avoid conflicts with the version integrated in LVGL.
+
+To build the firmware(RP2040 platform):
+
+```
+mkdir build-lvmicropython
+cd build-lvmicropython
+
+git clone https://github.com/lvgl/lv_micropython.git
+git clone https://github.com/calico-cat-3333/gc9a01_mpy_lv.git
+
+echo 'include(${CMAKE_CURRENT_LIST_DIR}/lv_micropython/user_modules/lv_binding_micropython/bindings.cmake)' >> bind.cmake
+echo 'include(${CMAKE_CURRENT_LIST_DIR}/gc9a01_mpy_lv/src/micropython.cmake)' >> bind.cmake
+
+cd lv_micropython
+git submodule update --init --recursive user_modules/lv_binding_micropython
+make -C ports/rp2 BOARD=PICO submodules
+make -j -C mpy-cross
+make -j -C ports/rp2 BOARD=PICO USER_C_MODULES=../../../bind.cmake
+```
+
+Note: The files in the firmware folder are not prebuilt binaries. Please do not use them.
+
+Note: Tested only on the RP2040 platform.
+
+# Original project README
+
 # GC9A01 Display Driver for MicroPython
 
 <p align="center">
