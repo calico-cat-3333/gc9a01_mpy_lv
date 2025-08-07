@@ -50,9 +50,9 @@ I modified the original driver for one of my projects to add:
 - Writing text using bitmaps converted from True Type fonts
 - Drawing text using 8 and 16 bit wide bitmap fonts
 - Drawing text using Hershey vector fonts
-- Drawing JPG's, including a SLOW mode to draw jpg's larger than available ram
+- ~~Drawing JPG's, including a SLOW mode to draw jpg's larger than available ram
   using the TJpgDec - Tiny JPEG Decompressor R0.01d. from
-  http://elm-chan.org/fsw/tjpgd/00index.html
+  http://elm-chan.org/fsw/tjpgd/00index.html~~
 
 Included are 12 bitmap fonts derived from classic pc text mode fonts, 26 Hershey vector fonts and several example programs for different devices. The driver supports 240x240 displays.
 
