@@ -1,6 +1,7 @@
 import lvgl as lv
 import lv_utils
 from gc9a01_lv import GC9A01_lv
+from machine import Pin, SPI
 
 if not lv.is_initialized(): lv.init()
 if not lv_utils.event_loop.is_running(): event_loop=lv_utils.event_loop()
@@ -21,4 +22,4 @@ cal = lv.calendar(scr)
 cal.align(lv.ALIGN.CENTER,0,0)
 cal.set_size(180,180)
 
-d = lv.calendar_header_dropdown(cal)
+d = lv.calendar.add_header_dropdown(cal)
